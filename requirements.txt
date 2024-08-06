@@ -69,3 +69,4 @@ urllib3==2.2.2
 uvicorn==0.30.5
 wrapt==1.16.0
 yarl==1.9.4
+hypercorn==0.14.4
