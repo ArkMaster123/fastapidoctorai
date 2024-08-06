@@ -2,7 +2,7 @@
 
 from langchain_community.document_loaders.notiondb import NotionDBLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import tiktoken
@@ -18,6 +18,7 @@ import hashlib
 from uuid import uuid4
 from enum import Enum
 from datetime import datetime, timedelta
+from pydantic import BaseModel
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -44,6 +45,12 @@ class CleanupMode(str, Enum):
     NONE = "None"
     INCREMENTAL = "Incremental"
     FULL = "Full"
+
+class UpsertRequest(BaseModel):
+    notion_id: str
+    doc_type: str
+    cleanup_mode: CleanupMode = CleanupMode.INCREMENTAL
+    last_update_time: str = None
 
 def generate_source_id(content, metadata):
     """Generate a unique source ID based on content and metadata."""
@@ -246,29 +253,24 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.post("/upsert")
-async def upsert(
-    notion_id: str, 
-    doc_type: str, 
-    cleanup_mode: CleanupMode = CleanupMode.INCREMENTAL,
-    last_update_time: str = None
-):
-    logger.info(f"Upsert function started with {cleanup_mode} cleanup mode")
+async def upsert(request: UpsertRequest):
+    logger.info(f"Upsert function started with {request.cleanup_mode} cleanup mode")
     start_time = time.time()
     try:
-        if last_update_time is None:
-            last_update_time = (datetime.now() - timedelta(days=7)).isoformat()
+        if request.last_update_time is None:
+            request.last_update_time = (datetime.now() - timedelta(days=7)).isoformat()
 
-        if doc_type == "database":
-            await load_documents_from_notion_db(notion_id, last_update_time)
-        elif doc_type == "page":
-            await load_documents_from_notion_page(notion_id, last_update_time)
+        if request.doc_type == "database":
+            await load_documents_from_notion_db(request.notion_id, request.last_update_time)
+        elif request.doc_type == "page":
+            await load_documents_from_notion_page(request.notion_id, request.last_update_time)
         else:
             raise HTTPException(status_code=400, detail="Invalid document type")
 
         await split_documents()
         await calculate_pinecone_cost()
 
-        upsert_result = await cleanup_and_upsert_documents(docs, cleanup_mode)
+        upsert_result = await cleanup_and_upsert_documents(docs, request.cleanup_mode)
 
         total_time = time.time() - start_time
         return {
@@ -277,11 +279,12 @@ async def upsert(
             "total_pinecone_cost": total_cost,
             "total_embedding_cost": total_embedding_cost,
             "upsert_details": upsert_result,
-            "cleanup_mode": cleanup_mode,
-            "last_update_time": last_update_time,
+            "cleanup_mode": request.cleanup_mode,
+            "last_update_time": request.last_update_time,
             "total_process_time": total_time
         }
 
     except Exception as error:
         logger.error(f"Error in upsert: {str(error)}")
         raise HTTPException(status_code=500, detail=str(error))
+
